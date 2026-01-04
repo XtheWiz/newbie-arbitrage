@@ -1,0 +1,58 @@
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  ingestor:
+    build:
+      context: .
+      dockerfile: packages/ingestor/Dockerfile
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - POLYMARKET_WS_URL=${POLYMARKET_WS_URL}
+      - NODE_ENV=production
+    restart: unless-stopped
+
+  strategy-engine:
+    build:
+      context: .
+      dockerfile: packages/strategy-engine/Dockerfile
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - ARBITRAGE_THRESHOLD=${ARBITRAGE_THRESHOLD:-0.02}
+      - NODE_ENV=production
+    restart: unless-stopped
+
+  executor:
+    build:
+      context: .
+      dockerfile: packages/executor/Dockerfile
+    depends_on:
+      redis:
+        condition: service_healthy
+      strategy-engine:
+        condition: service_started
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - POLYGON_RPC_URL=${POLYGON_RPC_URL}
+      - PRIVATE_KEY=${PRIVATE_KEY}
+      - NODE_ENV=production
+    restart: unless-stopped
+
+volumes:
+  redis_data:
