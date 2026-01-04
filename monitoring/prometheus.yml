@@ -1,0 +1,34 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: []
+
+rule_files: []
+
+scrape_configs:
+  # Prometheus self-monitoring
+  - job_name: "prometheus"
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  # Ingestor service
+  - job_name: "ingestor"
+    static_configs:
+      - targets: ["ingestor:9100"]
+    metrics_path: /metrics
+
+  # Strategy Engine service
+  - job_name: "strategy-engine"
+    static_configs:
+      - targets: ["strategy-engine:9101"]
+    metrics_path: /metrics
+
+  # Executor service
+  - job_name: "executor"
+    static_configs:
+      - targets: ["executor:9102"]
+    metrics_path: /metrics

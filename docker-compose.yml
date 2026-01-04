@@ -1,4 +1,10 @@
+version: '3.8'
+
 services:
+  # =============================================================================
+  # Infrastructure
+  # =============================================================================
+  
   redis:
     image: redis:7-alpine
     ports:
@@ -9,50 +15,110 @@ services:
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
-      timeout: 5s
+      timeout: 3s
       retries: 5
+    restart: unless-stopped
 
+  prometheus:
+    image: prom/prometheus:v2.47.0
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.enable-lifecycle'
+    depends_on:
+      - ingestor
+      - strategy-engine
+      - executor
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:10.2.0
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=polymarket
+      - GF_USERS_ALLOW_SIGN_UP=false
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+
+  # =============================================================================
+  # Application Services
+  # =============================================================================
+  
   ingestor:
     build:
       context: .
       dockerfile: packages/ingestor/Dockerfile
+    environment:
+      - NODE_ENV=production
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - POLYMARKET_WS_URL=${POLYMARKET_WS_URL:-wss://ws-subscriptions-clob.polymarket.com/ws/market}
+      - MARKET_CONFIG=${MARKET_CONFIG:-}
+      - METRICS_PORT=9100
+    ports:
+      - "9100:9100"
     depends_on:
       redis:
         condition: service_healthy
-    environment:
-      - REDIS_URL=redis://redis:6379
-      - POLYMARKET_WS_URL=${POLYMARKET_WS_URL}
-      - NODE_ENV=production
     restart: unless-stopped
 
   strategy-engine:
     build:
       context: .
       dockerfile: packages/strategy-engine/Dockerfile
+    environment:
+      - NODE_ENV=production
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - TRADE_SIZE_USDC=${TRADE_SIZE_USDC:-500}
+      - MIN_NET_SPREAD=${MIN_NET_SPREAD:-0.02}
+      - MAX_PRICE_IMPACT=${MAX_PRICE_IMPACT:-0.02}
+      - STALE_THRESHOLD_MS=${STALE_THRESHOLD_MS:-5000}
+      - METRICS_PORT=9101
+    ports:
+      - "9101:9101"
     depends_on:
       redis:
         condition: service_healthy
-    environment:
-      - REDIS_URL=redis://redis:6379
-      - ARBITRAGE_THRESHOLD=${ARBITRAGE_THRESHOLD:-0.02}
-      - NODE_ENV=production
+      ingestor:
+        condition: service_started
     restart: unless-stopped
 
   executor:
     build:
       context: .
       dockerfile: packages/executor/Dockerfile
+    environment:
+      - NODE_ENV=production
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - EXECUTOR_MODE=${EXECUTOR_MODE:-PAPER}
+      - POLYGON_RPC_URL=${POLYGON_RPC_URL:-https://polygon-rpc.com}
+      - PRIVATE_KEY=${PRIVATE_KEY:-}
+      - MAX_FEE_PER_GAS_GWEI=${MAX_FEE_PER_GAS_GWEI:-500}
+      - MIN_BALANCE_USDC=${MIN_BALANCE_USDC:-100}
+      - METRICS_PORT=9102
+    ports:
+      - "9102:9102"
     depends_on:
       redis:
         condition: service_healthy
       strategy-engine:
         condition: service_started
-    environment:
-      - REDIS_URL=redis://redis:6379
-      - POLYGON_RPC_URL=${POLYGON_RPC_URL}
-      - PRIVATE_KEY=${PRIVATE_KEY}
-      - NODE_ENV=production
     restart: unless-stopped
 
 volumes:
   redis_data:
+  prometheus_data:
+  grafana_data:
