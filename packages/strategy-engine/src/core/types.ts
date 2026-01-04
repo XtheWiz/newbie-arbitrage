@@ -81,3 +81,75 @@ export const DEFAULT_STRATEGY_CONFIG: StrategyConfig = {
   minLiquidity: 500,
   riskFactor: 0.5,
 };
+
+/**
+ * Order book level for VWAP calculation
+ * Simplified version for pure math functions
+ */
+export interface OrderBookLevel {
+  price: number;
+  size: number;
+}
+
+export type OrderBookLevels = OrderBookLevel[];
+
+/**
+ * Result of VWAP calculation
+ */
+export interface VWAPResult {
+  /** Volume-Weighted Average Price */
+  vwap: number;
+  /** Total tokens that would be filled */
+  totalSize: number;
+  /** Total cost in USDC */
+  totalCost: number;
+  /** Number of order book levels consumed */
+  levelsConsumed: number;
+  /** Whether the full trade size can be filled */
+  fullyFilled: boolean;
+  /** True if order book lacks sufficient liquidity */
+  insufficientLiquidity: boolean;
+  /** Price impact from best price to VWAP (0-1) */
+  priceImpact: number;
+}
+
+/**
+ * Extended market snapshot with order book levels for VWAP calculation
+ */
+export interface DetailedMarketSnapshot extends MarketSnapshot {
+  /** YES token ask levels (sorted ascending) */
+  yesAsks: OrderBookLevels;
+  /** YES token bid levels (sorted descending) */
+  yesBids: OrderBookLevels;
+  /** NO token ask levels (sorted ascending) */
+  noAsks: OrderBookLevels;
+  /** NO token bid levels (sorted descending) */
+  noBids: OrderBookLevels;
+  /** Timestamp of last update (Unix ms) */
+  lastUpdateTimestamp: number;
+}
+
+/**
+ * VWAP-based arbitrage opportunity
+ */
+export interface VWAPArbitrageOpportunity {
+  /** Raw spread before fees: 1 - (yesVWAP + noVWAP) */
+  rawSpread: number;
+  /** Net spread after fees */
+  netSpread: number;
+  /** YES token VWAP for the trade size */
+  yesVWAP: number;
+  /** NO token VWAP for the trade size */
+  noVWAP: number;
+  /** Expected profit in USDC for the trade size */
+  expectedProfit: number;
+  /** Trade size in USDC */
+  tradeSize: number;
+  /** Whether both sides have sufficient liquidity */
+  hasLiquidity: boolean;
+  /** Combined price impact */
+  priceImpact: number;
+  /** Confidence score 0-1 */
+  confidence: number;
+}
+

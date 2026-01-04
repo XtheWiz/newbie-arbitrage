@@ -114,3 +114,146 @@ export function calculateCycleProfit(
   
   return redemptionValue - totalCost - fees;
 }
+
+// ============================================================================
+// VWAP-BASED ARBITRAGE DETECTION
+// ============================================================================
+
+import {
+  calculateArbitrageVWAP,
+  hasEnoughLiquidity,
+} from './VWAPCalculator.js';
+import type {
+  DetailedMarketSnapshot,
+  VWAPArbitrageOpportunity,
+} from './types.js';
+
+/**
+ * Configuration for VWAP-based arbitrage detection
+ */
+export interface VWAPStrategyConfig {
+  /** Trade size in USDC to calculate VWAP for */
+  tradeSizeUSDC: number;
+  /** Minimum net spread to trigger (after fees) */
+  minNetSpread: number;
+  /** Fee percentage per trade (applied to both legs) */
+  feePercent: number;
+  /** Maximum acceptable price impact */
+  maxPriceImpact: number;
+  /** Maximum data age before considered stale (ms) */
+  staleThresholdMs: number;
+}
+
+export const DEFAULT_VWAP_STRATEGY_CONFIG: VWAPStrategyConfig = {
+  tradeSizeUSDC: 500,
+  minNetSpread: 0.02,  // 2% minimum profit
+  feePercent: 0.001,   // 0.1% fee
+  maxPriceImpact: 0.02, // 2% max slippage
+  staleThresholdMs: 5000, // 5 second stale threshold
+};
+
+/**
+ * Check if market data is stale
+ * 
+ * @param lastUpdateTimestamp - Last update timestamp in ms
+ * @param staleThresholdMs - Threshold for stale data
+ * @param currentTimestamp - Current time (optional, defaults to now)
+ * @returns true if data is stale
+ */
+export function isDataStale(
+  lastUpdateTimestamp: number,
+  staleThresholdMs: number,
+  currentTimestamp: number = Date.now()
+): boolean {
+  return currentTimestamp - lastUpdateTimestamp > staleThresholdMs;
+}
+
+/**
+ * VWAP-based arbitrage detection
+ * 
+ * 🚀 RUST-PORTABLE: Pure function with no side effects.
+ * 
+ * This is the core arbitrage detection using realistic execution prices:
+ * profit = 1.00 - (VWAP_YES + VWAP_NO) - fees
+ * 
+ * @param snapshot - Detailed market snapshot with order book levels
+ * @param config - VWAP strategy configuration
+ * @param currentTimestamp - Optional current timestamp for stale check
+ * @returns Arbitrage opportunity if profitable, null otherwise
+ */
+export function detectVWAPArbitrage(
+  snapshot: DetailedMarketSnapshot,
+  config: VWAPStrategyConfig,
+  currentTimestamp: number = Date.now()
+): VWAPArbitrageOpportunity | null {
+  // 1. Stale data check - CRITICAL SAFETY
+  if (isDataStale(snapshot.lastUpdateTimestamp, config.staleThresholdMs, currentTimestamp)) {
+    return null;
+  }
+
+  // 2. Calculate VWAP for both sides using order book depth
+  const { yesVWAP, noVWAP, combinedCost } = calculateArbitrageVWAP(
+    snapshot.yesAsks,
+    snapshot.noAsks,
+    config.tradeSizeUSDC
+  );
+
+  // 3. Check if both sides have sufficient liquidity
+  if (!hasEnoughLiquidity(yesVWAP, config.maxPriceImpact) ||
+      !hasEnoughLiquidity(noVWAP, config.maxPriceImpact)) {
+    return null;
+  }
+
+  // 4. Calculate arbitrage spread
+  // Raw spread: 1 - (VWAP_YES + VWAP_NO)
+  // If positive, we pay less than $1 for a complete set worth $1
+  const rawSpread = 1 - combinedCost;
+
+  // Account for fees on both legs
+  const totalFees = 2 * config.feePercent * (config.tradeSizeUSDC / 2);
+  const feesAsSpread = totalFees / (config.tradeSizeUSDC / 2);
+  const netSpread = rawSpread - feesAsSpread;
+
+  // 5. Check if profitable
+  // Formula: 1.00 - (VWAP_YES + VWAP_NO) > (Threshold + Fees)
+  if (netSpread <= config.minNetSpread) {
+    return null;
+  }
+
+  // 6. Calculate expected profit
+  // Each side gets half the trade size
+  const tokensPerSide = (config.tradeSizeUSDC / 2) / combinedCost;
+  const expectedProfit = tokensPerSide * netSpread;
+
+  // 7. Calculate confidence based on liquidity and spread stability
+  const avgPriceImpact = (yesVWAP.priceImpact + noVWAP.priceImpact) / 2;
+  const liquidityConfidence = 1 - (avgPriceImpact / config.maxPriceImpact);
+  const spreadConfidence = Math.min(netSpread / 0.1, 1); // Max at 10% spread
+  const confidence = liquidityConfidence * 0.6 + spreadConfidence * 0.4;
+
+  return {
+    rawSpread,
+    netSpread,
+    yesVWAP: yesVWAP.vwap,
+    noVWAP: noVWAP.vwap,
+    expectedProfit,
+    tradeSize: config.tradeSizeUSDC,
+    hasLiquidity: true,
+    priceImpact: avgPriceImpact,
+    confidence,
+  };
+}
+
+/**
+ * Light version for quick pre-check before full VWAP calculation
+ * Uses best prices only, returns true if worth checking VWAP
+ */
+export function quickArbitrageCheck(
+  yesBestAsk: number,
+  noBestAsk: number,
+  minSpread: number
+): boolean {
+  const rawSpread = 1 - (yesBestAsk + noBestAsk);
+  return rawSpread > minSpread * 0.8; // 80% of threshold as pre-check
+}
+

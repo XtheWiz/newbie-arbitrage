@@ -8,5 +8,6 @@
 
 export * from './types.js';
 export * from './ArbitrageDetector.js';
+export * from './VWAPCalculator.js';
 export * from './RiskCalculator.js';
 export * from './SignalGenerator.js';

@@ -11,8 +11,20 @@ import {
   createRedisClientFromEnv,
   createLogger,
 } from '@polymarket-arb/shared';
+import type { MarketOrderBookState } from '../../domain/OrderBookManager.js';
 
 const logger = createLogger({ name: 'ingestor:publisher' });
+
+/**
+ * Extended market data with full order book levels for VWAP calculation
+ */
+export interface DetailedMarketData extends IMarketData {
+  yesAsks: Array<{ price: number; size: number }>;
+  yesBids: Array<{ price: number; size: number }>;
+  noAsks: Array<{ price: number; size: number }>;
+  noBids: Array<{ price: number; size: number }>;
+  lastUpdateTimestamp: number;
+}
 
 export class MarketDataPublisher {
   private publisher: Publisher;
@@ -52,6 +64,38 @@ export class MarketDataPublisher {
     }
   }
 
+  /**
+   * Publish combined market data from OrderBookManager state
+   * Includes full order book levels for VWAP calculation
+   */
+  async publishCombinedMarketData(state: MarketOrderBookState): Promise<void> {
+    if (!state.yesBook || !state.noBook) {
+      logger.warn({ marketId: state.marketId }, 'Cannot publish: missing order book');
+      return;
+    }
+
+    const detailedData: DetailedMarketData = {
+      ...this.buildMarketData(state.marketId, state.yesBook, state.noBook),
+      // Include order book levels for VWAP calculation
+      yesAsks: state.yesBook.asks.map((l) => ({ price: l.price, size: l.size })),
+      yesBids: state.yesBook.bids.map((l) => ({ price: l.price, size: l.size })),
+      noAsks: state.noBook.asks.map((l) => ({ price: l.price, size: l.size })),
+      noBids: state.noBook.bids.map((l) => ({ price: l.price, size: l.size })),
+      lastUpdateTimestamp: Math.max(state.lastYesUpdate, state.lastNoUpdate),
+    };
+
+    await this.publisher.publish(CHANNELS.MARKET_SNAPSHOT, detailedData);
+    
+    logger.debug(
+      {
+        marketId: state.marketId,
+        yesLevels: detailedData.yesAsks.length,
+        noLevels: detailedData.noAsks.length,
+      },
+      'Published detailed market data'
+    );
+  }
+
   private buildMarketData(
     marketId: string,
     yesBook: IOrderBook,
@@ -88,3 +132,4 @@ export class MarketDataPublisher {
     await this.publisher.disconnect();
   }
 }
+
