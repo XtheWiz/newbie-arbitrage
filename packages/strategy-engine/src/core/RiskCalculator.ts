@@ -19,12 +19,18 @@ export function calculateKellySize(
   expectedReturn: number,
   config: StrategyConfig
 ): number {
+  // SECURITY FIX: Guard against division by zero
+  if (expectedReturn <= 0) {
+    return 0;
+  }
+
+  // Clamp probability to valid range
+  const p = Math.max(0, Math.min(1, winProbability));
+  const q = 1 - p;
+
   // Kelly formula: f = (bp - q) / b
   // where b = odds, p = win probability, q = 1 - p
   const b = expectedReturn;
-  const p = winProbability;
-  const q = 1 - p;
-
   const kellyFraction = (b * p - q) / b;
 
   // Apply fractional Kelly based on risk factor

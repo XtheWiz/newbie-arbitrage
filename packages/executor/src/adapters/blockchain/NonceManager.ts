@@ -86,40 +86,58 @@ export class NonceManager {
   /**
    * Acquire the next available nonce
    * Uses mutex to prevent race conditions
+   * SECURITY FIX: Proper mutex pattern that handles rejections without breaking chain
    */
   async acquireNonce(): Promise<number> {
-    return new Promise((resolve, reject) => {
-      this.mutex = this.mutex.then(async () => {
-        try {
-          // Check for expired pending nonces
-          this.cleanupExpiredNonces();
-
-          // Check concurrent limit
-          if (this.pendingNonces.size >= this.config.maxConcurrentTx) {
-            throw new Error(`Max concurrent transactions (${this.config.maxConcurrentTx}) reached`);
-          }
-
-          // Sync if we don't have a nonce yet
-          if (this.nextNonce === null) {
-            await this.syncNonce();
-          }
-
-          const nonce = this.nextNonce!;
-          this.nextNonce = nonce + 1;
-
-          // Track pending nonce
-          this.pendingNonces.set(nonce, {
-            nonce,
-            timestamp: Date.now(),
-          });
-
-          logger.debug({ nonce, pending: this.pendingNonces.size }, 'Nonce acquired');
-          resolve(nonce);
-        } catch (error) {
-          reject(error);
-        }
-      });
+    // Wait for previous mutex to complete (regardless of resolve/reject)
+    let previousMutex = this.mutex;
+    
+    // Create new mutex promise with resolver
+    let resolveMutex: () => void;
+    this.mutex = new Promise(resolve => {
+      resolveMutex = resolve;
     });
+
+    try {
+      // Wait for previous operation to complete
+      await previousMutex;
+    } catch {
+      // Previous operation failed, but we continue - chain doesn't break
+    }
+
+    try {
+      // Check for expired pending nonces
+      this.cleanupExpiredNonces();
+
+      // Check concurrent limit
+      if (this.pendingNonces.size >= this.config.maxConcurrentTx) {
+        throw new Error(`Max concurrent transactions (${this.config.maxConcurrentTx}) reached`);
+      }
+
+      // Sync if we don't have a nonce yet, with timeout
+      if (this.nextNonce === null) {
+        const syncPromise = this.syncNonce();
+        const timeoutPromise = new Promise<never>((_, reject) => {
+          setTimeout(() => reject(new Error('Nonce sync timeout')), 10000);
+        });
+        await Promise.race([syncPromise, timeoutPromise]);
+      }
+
+      const nonce = this.nextNonce!;
+      this.nextNonce = nonce + 1;
+
+      // Track pending nonce
+      this.pendingNonces.set(nonce, {
+        nonce,
+        timestamp: Date.now(),
+      });
+
+      logger.debug({ nonce, pending: this.pendingNonces.size }, 'Nonce acquired');
+      return nonce;
+    } finally {
+      // CRITICAL: Always release mutex, even on error
+      resolveMutex!();
+    }
   }
 
   /**

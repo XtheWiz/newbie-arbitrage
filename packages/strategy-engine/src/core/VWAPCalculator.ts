@@ -119,26 +119,47 @@ export function calculateSellVWAP(
  * Calculate the effective cost to buy both YES and NO tokens
  * for a complete arbitrage set
  * 
+ * SECURITY FIX: For Polymarket arbitrage, you need EQUAL TOKEN quantities
+ * of YES and NO (to form a redeemable set for $1), not equal USD quantities.
+ * 
  * @param yesAsks - YES token ask levels
  * @param noAsks - NO token ask levels  
- * @param tradeSizeUSDC - Total USDC to deploy (split between YES/NO)
- * @returns Combined VWAP for the arbitrage pair
+ * @param tradeSizeUSDC - Total USDC to deploy
+ * @returns Combined VWAP for the arbitrage pair with equal token quantities
  */
 export function calculateArbitrageVWAP(
   yesAsks: OrderBookLevels,
   noAsks: OrderBookLevels,
   tradeSizeUSDC: number
-): { yesVWAP: VWAPResult; noVWAP: VWAPResult; combinedCost: number } {
-  // For arbitrage, we buy equal value of YES and NO
-  const perSideSize = tradeSizeUSDC / 2;
+): { yesVWAP: VWAPResult; noVWAP: VWAPResult; combinedCost: number; tokensPerSet: number } {
+  // Get best prices to estimate token ratio
+  const yesBestAsk = yesAsks[0]?.price ?? 0.5;
+  const noBestAsk = noAsks[0]?.price ?? 0.5;
   
-  const yesVWAP = calculateBuyVWAP(yesAsks, perSideSize);
-  const noVWAP = calculateBuyVWAP(noAsks, perSideSize);
+  // For equal tokens: we need to split USDC proportionally to prices
+  // If YES=$0.40 and NO=$0.60, to get 100 tokens of each:
+  //   - YES cost: 100 * $0.40 = $40
+  //   - NO cost: 100 * $0.60 = $60
+  //   - Total: $100, ratio is 40:60
+  const totalCostPerSet = yesBestAsk + noBestAsk;
+  const yesRatio = yesBestAsk / totalCostPerSet;
+  const noRatio = noBestAsk / totalCostPerSet;
+  
+  // Split USDC by price ratio to get approximately equal tokens
+  const yesUSDC = tradeSizeUSDC * yesRatio;
+  const noUSDC = tradeSizeUSDC * noRatio;
+  
+  const yesVWAP = calculateBuyVWAP(yesAsks, yesUSDC);
+  const noVWAP = calculateBuyVWAP(noAsks, noUSDC);
+  
+  // Calculate tokens we can actually get
+  // Limit by the smaller quantity to ensure we have complete sets
+  const tokensPerSet = Math.min(yesVWAP.totalSize, noVWAP.totalSize);
   
   // Combined cost per token for a complete set
   const combinedCost = yesVWAP.vwap + noVWAP.vwap;
   
-  return { yesVWAP, noVWAP, combinedCost };
+  return { yesVWAP, noVWAP, combinedCost, tokensPerSet };
 }
 
 /**
@@ -150,3 +171,4 @@ export function hasEnoughLiquidity(
 ): boolean {
   return vwapResult.fullyFilled && vwapResult.priceImpact <= maxPriceImpact;
 }
+

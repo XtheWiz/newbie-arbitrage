@@ -179,7 +179,9 @@ export class CircuitBreaker {
       return this.currentBalance >= this.config.minBalanceUSDC;
     } catch (error) {
       logger.error({ error }, 'Failed to check balance');
-      return true; // Don't trip on RPC errors
+      // SECURITY FIX: Fail-safe - if we can't check balance, block trading
+      // This prevents trading when RPC is partially degraded
+      return false;
     }
   }
 

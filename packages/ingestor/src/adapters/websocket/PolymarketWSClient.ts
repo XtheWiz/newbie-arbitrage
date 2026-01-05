@@ -31,6 +31,8 @@ export class PolymarketWSClient extends EventEmitter {
   private ws: WebSocket | null = null;
   private reconnectAttempts = 0;
   private pingInterval: NodeJS.Timeout | null = null;
+  private pongCheckInterval: NodeJS.Timeout | null = null;
+  private lastPongTime = 0;
   private isConnected = false;
 
   constructor(private readonly config: WSClientConfig) {
@@ -66,6 +68,11 @@ export class PolymarketWSClient extends EventEmitter {
           if (!this.isConnected) {
             reject(error);
           }
+        });
+
+        // SECURITY FIX: Track pong responses for zombie detection
+        this.ws.on('pong', () => {
+          this.lastPongTime = Date.now();
         });
       } catch (error) {
         reject(error);
@@ -158,9 +165,36 @@ export class PolymarketWSClient extends EventEmitter {
 
   private startPingInterval(): void {
     const interval = this.config.pingIntervalMs ?? 30000;
+    
+    // Initialize pong time to now
+    this.lastPongTime = Date.now();
+    
+    // Send ping periodically
     this.pingInterval = setInterval(() => {
       if (this.ws && this.isConnected) {
         this.ws.ping();
+      }
+    }, interval);
+
+    // SECURITY FIX: Check for zombie connection (no pong response)
+    this.pongCheckInterval = setInterval(() => {
+      if (this.isConnected && this.lastPongTime > 0) {
+        const timeSincePong = Date.now() - this.lastPongTime;
+        
+        // If no pong for 2x ping interval, connection is likely dead
+        if (timeSincePong > interval * 2) {
+          logger.error(
+            { timeSincePong, threshold: interval * 2 },
+            'WebSocket zombie detected - no pong response, forcing reconnect'
+          );
+          
+          // Force close and trigger reconnect
+          if (this.ws) {
+            this.ws.terminate(); // Force close, not graceful
+          }
+          this.isConnected = false;
+          this.attemptReconnect();
+        }
       }
     }, interval);
   }
@@ -170,6 +204,11 @@ export class PolymarketWSClient extends EventEmitter {
       clearInterval(this.pingInterval);
       this.pingInterval = null;
     }
+    if (this.pongCheckInterval) {
+      clearInterval(this.pongCheckInterval);
+      this.pongCheckInterval = null;
+    }
+    this.lastPongTime = 0;
   }
 
   async disconnect(): Promise<void> {
